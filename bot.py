@@ -3,7 +3,7 @@ import logging
 import math
 import datetime
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -41,9 +41,11 @@ class CalculatorBot:
         try:
             # Remove any dangerous characters
             expression = re.sub(r'[^0-9+\-*/().%\s]', '', expression)
-            # Replace percentage
+            # Replace percentage with /100
             expression = expression.replace('%', '/100')
             result = eval(expression)
+            if isinstance(result, float) and result.is_integer():
+                return f"Result: {int(result)}"
             return f"Result: {result:.2f}" if isinstance(result, float) else f"Result: {result}"
         except Exception as e:
             return f"Error: Invalid expression. Please use basic operators (+, -, *, /, %, parentheses)"
@@ -59,7 +61,10 @@ class CalculatorBot:
             return "Error: Discount cannot exceed 100%"
         discount_amount = (price * discount) / 100
         final_price = price - discount_amount
-        return f"Original: ${price:.2f}\nDiscount: {discount}%\nDiscount Amount: ${discount_amount:.2f}\nFinal Price: ${final_price:.2f}"
+        return (f"Original: ${price:.2f}\n"
+                f"Discount: {discount}%\n"
+                f"Discount Amount: ${discount_amount:.2f}\n"
+                f"Final Price: ${final_price:.2f}")
 
     def calculate_compound_interest(self, principal: float, rate: float, time: float, n: int = 12) -> str:
         """Calculate compound interest"""
@@ -67,7 +72,12 @@ class CalculatorBot:
             return "Error: Interest rate cannot exceed 100%"
         amount = principal * (1 + (rate/100)/n) ** (n * time)
         interest = amount - principal
-        return f"Principal: ${principal:.2f}\nRate: {rate}%\nTime: {time} years\nCompound frequency: {n} times/year\n\nTotal Amount: ${amount:.2f}\nTotal Interest: ${interest:.2f}"
+        return (f"Principal: ${principal:.2f}\n"
+                f"Rate: {rate}%\n"
+                f"Time: {time} years\n"
+                f"Compound frequency: {n} times/year\n\n"
+                f"Total Amount: ${amount:.2f}\n"
+                f"Total Interest: ${interest:.2f}")
 
     def convert_unit(self, value: float, from_unit: str, to_unit: str, category: str) -> str:
         """Convert between units"""
@@ -76,13 +86,16 @@ class CalculatorBot:
                 return "Error: Unit category not found"
             
             units = UNITS[category]
-            if from_unit not in units or to_unit not in units:
+            from_unit_lower = from_unit.lower()
+            to_unit_lower = to_unit.lower()
+            
+            if from_unit_lower not in units or to_unit_lower not in units:
                 return "Error: Unit not found in category"
             
             # Convert to base unit (meters or kilograms)
-            base_value = value * units[from_unit]
+            base_value = value * units[from_unit_lower]
             # Convert from base unit to target unit
-            result = base_value / units[to_unit]
+            result = base_value / units[to_unit_lower]
             return f"{value} {from_unit} = {result:.4f} {to_unit}"
         except Exception as e:
             return f"Error: {str(e)}"
@@ -170,7 +183,9 @@ class CalculatorBot:
             
             days_to_birthday = (next_birthday - today).days
             
-            return f"Age: {years} years, {months} months, {days} days\nDays until next birthday: {days_to_birthday}\nTotal days alive: {(today - birth_date).days}"
+            return (f"Age: {years} years, {months} months, {days} days\n"
+                    f"Days until next birthday: {days_to_birthday}\n"
+                    f"Total days alive: {(today - birth_date).days}")
         except Exception as e:
             return f"Error: {str(e)}"
 
@@ -253,7 +268,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 🤖 **Calculator Bot Help**
 
 **Basic Calculations:**
-Simply type any arithmetic expression: `2+2`, `10*5`, `(4+3)*2`, `10%`
+Simply type any arithmetic expression: `2+2`, `10*5`, `4+3)*2`, `10%`
 
 **Percentage Calculator:**
 Type: `percentage 20 of 100` or use the button
@@ -345,7 +360,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_input = update.message.text.strip()
     response = None
     operation = context.user_data.get('operation', '')
-    context.user_data['awaiting_input'] = False
     
     # Check if it's a basic calculation (without any command prefix)
     if not any(user_input.lower().startswith(cmd) for cmd in ['percentage', 'discount', 'compound', 'convert', 'datasize', 'bmi', 'age', 'datediff']):
@@ -399,7 +413,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 from_unit = parts[2] if len(parts) > 3 else parts[3]
                 to_unit = parts[-1]
                 # Determine category
-                category = 'Length' if from_unit in UNITS['Length'] or to_unit in UNITS['Length'] else 'Weight'
+                if from_unit in UNITS['Length'] or to_unit in UNITS['Length']:
+                    category = 'Length'
+                elif from_unit in UNITS['Weight'] or to_unit in UNITS['Weight']:
+                    category = 'Weight'
+                else:
+                    category = 'Length'  # Default
                 result = bot.convert_unit(value, from_unit, to_unit, category)
                 response = f"📏 **Unit Converter**\n\n{result}"
         
@@ -480,8 +499,18 @@ def main() -> None:
     if not token:
         raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables")
     
-    # Create Application
-    application = Application.builder().token(token).build()
+    # Create Application with proper settings
+    try:
+        application = (
+            Application.builder()
+            .token(token)
+            .read_timeout(30)
+            .write_timeout(30)
+            .build()
+        )
+    except Exception as e:
+        logger.error(f"Failed to build application: {e}")
+        raise
 
     # Command handlers
     application.add_handler(CommandHandler("start", start))
@@ -498,7 +527,12 @@ def main() -> None:
     application.add_error_handler(error_handler)
 
     # Start the bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        logger.info("Starting bot...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Error running bot: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
