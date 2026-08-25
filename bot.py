@@ -3,9 +3,15 @@ import logging
 import math
 import datetime
 import re
+import asyncio
+import threading
 from typing import Dict, Any, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# For web server
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import socket
 
 # Enable logging
 logging.basicConfig(
@@ -220,6 +226,28 @@ class CalculatorBot:
 # Initialize bot
 bot = CalculatorBot()
 
+# Health check server
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def run_health_server():
+    """Run a simple HTTP server for health checks"""
+    try:
+        port = int(os.environ.get('PORT', 8080))
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        logger.info(f"Health check server running on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health check server error: {e}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when /start is issued."""
     user = update.effective_user
@@ -351,9 +379,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     message = messages.get(query.data, "Please use the /help command for instructions.")
     await query.edit_message_text(message, parse_mode='Markdown')
-    
-    if query.data == 'calc_basic':
-        context.user_data['awaiting_input'] = True
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user messages."""
@@ -498,6 +523,10 @@ def main() -> None:
     token = os.environ.get('TELEGRAM_BOT_TOKEN')
     if not token:
         raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables")
+    
+    # Start health check server in a separate thread
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
     
     # Create Application with proper settings
     try:
